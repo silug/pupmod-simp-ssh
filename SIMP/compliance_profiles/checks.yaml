@@ -184,7 +184,6 @@ checks:
       - CCI-000766
     oval-ids:
     - sshd_disable_empty_passwords
-    - sshd_disable_empty_passwords
   oval:com.puppet.forge.simp.ssh.server.conf.permitrootlogin:
     settings:
       parameter: ssh::server::conf::permitrootlogin
@@ -206,7 +205,6 @@ checks:
       - SRG-OS-000480-GPOS-00227
       - CCI-000366
     oval-ids:
-    - sshd_disable_root_login
     - sshd_disable_root_login
   oval:com.puppet.forge.simp.ssh.server.conf.pki:
     settings:
