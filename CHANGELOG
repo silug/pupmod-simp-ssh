@@ -1,3 +1,6 @@
+* Mon Aug 24 2026 Steven Pritchard <steve@sicura.us> - 8.1.1
+- [puppetsync] Update metadata.json dependency ranges from the Forge
+
 * Wed Aug 19 2026 Steven Pritchard <steve@sicura.us> - 8.1.0
 - Raise the metadata.json optional dependency upper bounds for
   simp/vox_selinux and puppet/selinux to < 7.0.0
