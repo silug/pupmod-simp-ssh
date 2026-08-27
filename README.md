@@ -11,6 +11,7 @@
 <!-- vim-markdown-toc GFM -->
 
 * [Module Description](#module-description)
+* [Breaking changes in 9.0.0](#breaking-changes-in-900)
 * [Setup](#setup)
   * [What ssh affects](#what-ssh-affects)
   * [Setup requirements](#setup-requirements)
@@ -42,13 +43,67 @@
 
 Manages the SSH Client and Server
 
+## Breaking changes in 9.0.0
+
+Version 9.0.0 drastically reduces the "blast radius" of `include ssh`. A bare
+`include ssh` now **installs the `openssh-server`/`openssh-clients` packages
+and manages only the `/etc/ssh` directory** — it does *not* manage the `sshd`
+service, rewrite `/etc/ssh/sshd_config` or `/etc/ssh/ssh_config`, or silently
+enable any `simp_options::*` feature. Everything that used to be automatic is
+now opt-in:
+
+- The `sshd` service (and the `sshd` user/group, `/var/empty/sshd`,
+  host-key file management) is only managed when `ssh::server::service_ensure`
+  or `ssh::server::service_enable` is set.
+- Each `ssh::server::conf` setting defaults to `undef` and only writes a
+  `sshd_config` entry when you set it. A bare include leaves
+  `/etc/ssh/sshd_config` exactly as the package and administrator left it.
+- `ssh::client::add_default_entry` now defaults to `false`, so the `Host *`
+  entry in `/etc/ssh/ssh_config` is no longer written automatically.
+- The `simp_options::*` lookups are gone, along with the server-side
+  FIPS/version cipher auto-detection and the `ssh::server::conf::fips`,
+  `enable_fallback_ciphers`, and `fallback_ciphers` parameters.
+- **IPA-joined hosts:** the automatic `GSSAPIAuthentication yes` (driven by
+  the `ipa` fact) is gone, and the `simp:defaults` profile deliberately leaves
+  `GSSAPIAuthentication` unmanaged so it cannot break Kerberos SSO. If your
+  users log in via Kerberos/GSSAPI, set
+  `ssh::server::conf::gssapiauthentication: true` explicitly.
+- **OATH:** `ssh::server::conf::oath` now defaults to unset. Enabling it still
+  forces `PasswordAuthentication no`; when you later disable it, set
+  `oath: false` *explicitly* (rather than removing the key) so the module
+  restores `PasswordAuthentication` and you are not locked out.
+
+There are **two ways to restore the previous behavior**:
+
+1. **Per parameter** — set the specific `ssh::*` parameters you want (e.g.
+   `ssh::server::service_ensure: running`,
+   `ssh::server::conf::permitrootlogin: false`,
+   `ssh::client::add_default_entry: true`).
+2. **The `simp:defaults` profile** — the module ships a
+   [compliance_engine][compliance_engine] profile named `simp:defaults` that is
+   a drop-in restoration of the pre-9.0.0 behavior. Enable it stack-wide with a
+   single Hiera key:
+
+   ```yaml
+   compliance_engine::enforcement:
+     - simp:defaults
+   ```
+
+   This is opinionated for SIMP sites: it manages the service, re-applies the
+   hardening defaults and FIPS-aware crypto, and **re-enables** the SIMP
+   integrations (firewall, PKI, haveged, tcpwrappers). Site Hiera outranks the
+   profile, so to get "old behavior, but safer" enable the profile and then
+   override the individual keys you care about (e.g.
+   `ssh::server::conf::firewall: false`) in your own Hiera.
 
 ## Setup
 
 ### What ssh affects
 
-SSH installs the SSH package, runs the sshd service and manages files primarily
-in `/etc/ssh`
+A bare `include ssh` installs the SSH packages and manages the `/etc/ssh`
+directory. The sshd service and the contents of the files in `/etc/ssh` are
+managed only when the relevant parameters are set (or the `simp:defaults`
+profile is enabled) — see [Breaking changes in 9.0.0](#breaking-changes-in-900).
 
 ### Setup requirements
 
@@ -84,12 +139,13 @@ class{ 'ssh':
 
 #### Managing client settings
 
-Including `ssh::client` with no other options will automatically manage client
-settings to be used with all hosts (`Host *`).
+As of 9.0.0, `ssh::client` does **not** manage `/etc/ssh/ssh_config` by
+default. Set `ssh::client::add_default_entry: true` to manage the `Host *`
+entry with the module's sane defaults.
 
-If you want to customize any of these settings, you must disable the creation
-of the default entry with `ssh::client::add_default_entry: false` and manage
-`Host *` manually with the defined type `ssh::client::host_config_entry`:
+If you want to customize the default entry, leave `add_default_entry` at its
+default of `false` and manage `Host *` directly with the defined type
+`ssh::client::host_config_entry`:
 
 <!--
   Maintainers: You can validate these examples with the acceptance test
@@ -170,8 +226,11 @@ class{ 'ssh':
 
 #### Managing server settings
 
-Including `ssh::server` with the default options will manage the server with
-reasonable settings for each host's environment.
+As of 9.0.0, `ssh::server` only manages the `sshd` service and the contents of
+`/etc/ssh/sshd_config` when you opt in. Set `ssh::server::service_ensure` and
+`ssh::server::service_enable` to manage the service, and set the individual
+`ssh::server::conf` parameters (or enable the `simp:defaults` profile) for the
+hardening defaults.
 
 ```puppet
 include 'ssh::server'
@@ -295,44 +354,38 @@ Note: including `ssh::client` directly would still manage the SSH client
 
 ### Managing SSH ciphers
 
-Unless instructed otherwise, the `ssh::` classes select ciphers based on the OS
-environment (the OS version, the version of the SSH server, whether [FIPS
-mode][fips_mode] is enabled, etc).
-
 #### Server ciphers
 
-<!--
-   Maintainers: You can validate these examples by setting the environment
-   variable `SIMP_SSH_report_dir` to a valid directory path while running
-   the acceptance tests in spec/acceptance/suites/default/ssh_spec.rb.
--->
+As of 9.0.0, the server classes no longer auto-select ciphers: when
+`ssh::server::conf::ciphers`, `ssh::server::conf::macs`, or
+`ssh::server::conf::kex_algorithms` are unset, no corresponding `sshd_config`
+line is managed and the OpenSSH/crypto-policy defaults apply. (The old
+FIPS/version auto-detection and the `ssh::server::conf::fips`,
+`enable_fallback_ciphers`, and `fallback_ciphers` parameters were removed —
+see [Breaking changes in 9.0.0](#breaking-changes-in-900).)
 
-At the time of 6.4.0, the default ciphers for `ssh::server` on EL7 when FIPS
-mode is _disabled_ are:
+To manage them, either set the parameters explicitly:
 
-- `aes256-gcm@openssh.com`
-- `aes128-gcm@openssh.com`
-- `aes256-ctr`
-- `aes192-ctr`
-- `aes128-ctr`
+```yaml
+ssh::server::conf::ciphers:
+  - aes256-gcm@openssh.com
+  - aes128-gcm@openssh.com
+  - aes256-ctr
+  - aes192-ctr
+  - aes128-ctr
+```
 
-There are also 'fallback' ciphers, which are required in order to communicate
-with systems that are compliant with [FIPS-140-2][fips140_2].  These are
-_always_ included by default unless the parameter
-`ssh::server::conf::enable_fallback_ciphers` is set to `false`:
-
-- `aes256-ctr`
-- `aes192-ctr`
-- `aes128-ctr`
-
-At the time of 6.4.0, the 'fallback' ciphers are the default ciphers for
-`ssh::server` on EL7 when FIPS mode is enabled and EL6 in either mode.
-
+or enable the `simp:defaults` profile, which supplies the strong, FIPS-aware
+cipher/MAC/key-exchange sets the module used to auto-detect (the profile
+selects the FIPS or non-FIPS variant based on the node's [FIPS
+mode][fips_mode] via a `fips_enabled` confine).
 
 #### Client ciphers
 
-By default, the system client ciphers in `/etc/ssh/ssh_config` are configured
-to strong ciphers that are recommended for use.
+When the default `Host *` entry is managed (`ssh::client::add_default_entry:
+true`, or any `ssh::client::host_config_entry`), the client ciphers in
+`/etc/ssh/ssh_config` are configured to strong ciphers that are recommended
+for use.
 
 If you need to connect to a system that does not support these ciphers but uses
 older or weaker ciphers, you should either:
@@ -420,6 +473,7 @@ Some environment variables may be useful:
   to validate and update the information in the [Server
   ciphers](#server-ciphers) section.
 
+[compliance_engine]: https://github.com/simp/rubygem-simp-compliance_engine
 [fips140_2]: https://csrc.nist.gov/publications/detail/fips/140/2/final
 [ssh_man]: https://man.openbsd.org/ssh
 [aug_ssh]: https://github.com/hercules-team/augeasproviders_ssh/
